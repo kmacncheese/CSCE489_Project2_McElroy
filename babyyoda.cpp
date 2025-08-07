@@ -213,5 +213,5 @@ int main(int argv, const char *argc[]) {
 	delete[] consumers;
 	pthread_mutex_destroy(&buf_mutex);
 
-	printf("\nProducer/Consumer simulation complete!\n - Total items produced: %d\n - Total items consumed:%d\n", produced_count, consumed_count);
+	printf("\nProducer/Consumer simulation complete!\n - Total items produced: %d\n - Total items consumed: %d\n", produced_count, consumed_count);
 }

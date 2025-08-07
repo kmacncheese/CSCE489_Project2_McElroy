@@ -17,8 +17,19 @@ Semaphore *full = NULL;
 
 pthread_mutex_t buf_mutex;
 
-int buffer = 0;
-int consumed = 0;
+// initialize the starting vars
+
+//buffer stuff
+int *buffer = NULL; //make it an array now
+int buffer_size = 0; //main param will set this, just need it to be global
+int in_pos = 0; // where in the buffer array the producer will place the next item
+int out_pos = 0; // where in the buffer array the consumer will take the next item
+
+//counters to keep track of things
+int produced_count = 0;
+int consumed_count = 0;
+int num_consumers = 0;
+int max_items = 0; // main param will set this
 
 
 /*************************************************************************************
@@ -31,42 +42,49 @@ int consumed = 0;
  *
  *************************************************************************************/
 
-void *producer_routine(void *data) {
+void *producer_routine(void* data) {
+	(void) data;
 
-	time_t rand_seed;
-	srand((unsigned int) time(&rand_seed));
+	printf("Producer has opened the babyyoda shop.\n");
 
-	// The current serial number (incremented)
-	unsigned int serialnum = 1;
-	
-	// We know the data pointer is an integer that indicates the number to produce
-	int left_to_produce = *((int *) data);
+	//simple loop, single producer so this won't change much.
+	//I just refactored this because I didn't understand the original code too much, my implementation made more sense in my head.
+	while (produced_count < max_items){
+		//the item to be produced
+		int item = produced_count + 1;
+		
+		//wait to enter critical section, which will decrement S.
+		empty->wait();
 
-	// Loop through the amount we're going to produce and place into the buffer
-	while (left_to_produce > 0) {
-		printf("Producer wants to put Yoda #%d into buffer...\n", serialnum);
-
-		// Semaphore check to make sure there is an available slot
-		full->wait();
-
-		// Place item on the next shelf slot by first setting the mutex to protect our buffer vars
+		//Critical section
+		// lock the section
 		pthread_mutex_lock(&buf_mutex);
 
-		buffer = serialnum;
-		serialnum++;
-		left_to_produce--;
+		//place new item at the in_pos, where it should go next
+		buffer[in_pos] = item;
+		printf("	[+] Producer put Yoda #%d on shelf %d.\n", item, in_pos);
+
+		//increment next item position, and wrap around the buffer if necessary.
+		in_pos++;
+		in_pos %= buffer_size;
+		produced_count++; //increment counter
 
 		pthread_mutex_unlock(&buf_mutex);
-		
-		printf("   Yoda put on shelf.\n");
-		
-		// Semaphore signal that there are items available
-		empty->signal();
+		// end of critical section
 
-		// random sleep but he makes them fast so 1/20 of a second
-		usleep((useconds_t) (rand() % 200000));
-	
+		//signal that the producer is available! this will increment S.
+		full->signal();
+
+		usleep((useconds_t)(rand() % 200000));
 	}
+
+	printf("\nProducer has made all the yodas and is now dipping.\n\n");
+
+	//closing time, double check for deadlocks
+	for (int i = 0; i < num_consumers; i++){
+		full->signal();
+	} 
+
 	return NULL;
 }
 
@@ -82,32 +100,47 @@ void *producer_routine(void *data) {
  *************************************************************************************/
 
 void *consumer_routine(void *data) {
-	(void) data;
+	//data should be the thread's ID, so dereference to get the value and then free.
+	int t_id = *((int *) data);
+	delete (int*) data;
 
-	bool quitthreads = false;
+	printf("Consumer #%d has entered the store.\n", t_id);
 
-	while (!quitthreads) {
-		printf("Consumer wants to buy a Yoda...\n");
+	while (true) {
 
-		// Semaphore to see if there are any items to take
-		empty->wait();
+		//so the original code here had it wait for an empty slot, but I think it should be waiting for a full one, since that means its "stocked"
+		full->wait();
 
-		// Take an item off the shelf
+		// Critical section starts
+		//Lock it to keep it safe
 		pthread_mutex_lock(&buf_mutex);
 	
-		printf("   Consumer bought Yoda #%d.\n", buffer);
-		buffer = 0;
-		consumed++;
+		//consumer cannot buy a babyyoda if it is over the specified max_items
+		if (consumed_count >= max_items) {
+			// if we are at max consumption, then leave the critical section and exit.
+			pthread_mutex_unlock(&buf_mutex);
+			full->signal();
+			break;
+
+		}
+		printf("	[-] Consumer #%d bought Yoda #%d from shelf %d. \n", t_id, buffer[out_pos], out_pos);  
+		
+		//increment and wrap
+		consumed_count++;
+		out_pos++;
+		out_pos %= buffer_size;
 	
+		// end of critical section, unlock and signal
 		pthread_mutex_unlock(&buf_mutex);
 
-		// Consumers wait up to one second
+		//again a change in logic here from the original code. Since we just took a yoda, it should signal the empty array to increment.
+		empty->signal();
+
+		// Consumers wait up to one second.  should wait fater signal since its not critical. Doing otherwise would just delay the other processes.
 		usleep((useconds_t) (rand() % 1000000));
-
-		full->signal();
 	}
-	printf("Consumer goes home.\n");
-
+	
+	printf("Consumer #%d goes home.\n",t_id);
 	return NULL;	
 }
 
@@ -123,52 +156,62 @@ void *consumer_routine(void *data) {
 int main(int argv, const char *argc[]) {
 
 	// Get our argument parameters
-	if (argv < 2) {
-		printf("Invalid parameters. Format: %s <max_items>\n", argc[0]);
+	if (argv != 4) {
+		printf("Invalid parameters. Format: %s <buffer_size> <num_consumers> <max_items> \nExiting...", argc[0]);
 		exit(0);
 	}
 
-	// User input on the size of the buffer
-	int num_produce = (unsigned int) strtol(argc[1], NULL, 10);
+	// Parameters
+	buffer_size = (unsigned int) strtol(argc[1], NULL, 10);
+	num_consumers = (unsigned int) strtol(argc[2], NULL, 10);
+	max_items= (unsigned int) strtol(argc[3], NULL, 10);
 
+	//check params
+	if (buffer_size <= 0 || num_consumers <= 0 || max_items <= 0){
+		printf("Arguments cannot be negative.\nExiting...");
+		exit(0);
+	}
 
-	printf("Producing %d today.\n", num_produce);
-	
+	printf("babyyoda store starting with <buffer_size>:%d, <num_consumers>:%d, and <max_items>:%d\n\n", buffer_size, num_consumers, max_items);
+
 	// Initialize our semaphores
-	empty = new Semaphore(0);
-	full = new Semaphore(1);
+	buffer = new int[buffer_size];
+	empty = new Semaphore(buffer_size); //empty will start like this because all slots are initially empty
+	full = new Semaphore(0); //full will start like this because all slots no slots are initially full
 
-	pthread_mutex_init(&buf_mutex, NULL); // Initialize our buffer mutex
+	pthread_mutex_init(&buf_mutex, nullptr); // Initialize our buffer mutex, nullptr instead of NULL since we are dealing with an array now.
 
+	//make the threads
 	pthread_t producer;
-	pthread_t consumer;
+	pthread_t *consumers = new pthread_t[num_consumers];
 
-	// Launch our producer thread
-	pthread_create(&producer, NULL, producer_routine, (void *) &num_produce);
+	// Launch our one producer thread
+	pthread_create(&producer, NULL, producer_routine, NULL);
 
-	// Launch our consumer thread
-	pthread_create(&consumer, NULL, consumer_routine, NULL);
+	// Launch our multiple consumer threads
+	for (int i = 0; i < num_consumers; i++){
+		int *t_id = new int(i + 1); // a unique thread id for each consumer thread
+		//create the thread based off the the address of consumers[i], so either &consumers[i] or consumers+i
+		pthread_create(consumers + i, nullptr, consumer_routine, t_id);
+	}
 
 	// Wait for our producer thread to finish up
 	pthread_join(producer, NULL);
+	printf("\nThe manufacturer has completed his work for the day.\n");
 
-	printf("The manufacturer has completed his work for the day.\n");
-
-	printf("Waiting for consumer to buy up the rest.\n");
-
-	// Give the consumers a second to finish snatching up items
-	while (consumed < num_produce)
-		sleep(1);
+	printf("Waiting for consumer to buy up the rest.\n\n");
 
 	// Now make sure they all exited
-//	for (unsigned int i=0; i<NUM_CONSUMERS; i++) {
-//		pthread_join(consumers[i], NULL);
-//	}
+	for (int i = 0; i < num_consumers; i++){
+		pthread_join(consumers[i], NULL);
+	}
 
 	// We are exiting, clean up
 	delete empty;
 	delete full;		
+	delete[] buffer;
+	delete[] consumers;
+	pthread_mutex_destroy(&buf_mutex);
 
-	printf("Producer/Consumer simulation complete!\n");
-
+	printf("\nProducer/Consumer simulation complete!\n - Total items produced: %d\n - Total items consumed:%d\n", produced_count, consumed_count);
 }

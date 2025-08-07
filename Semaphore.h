@@ -12,7 +12,9 @@ public:
 	void signal();
 
 private:
-
+	int S;
+	pthread_mutex_t s_mutex;
+	pthread_cond_t cond;
 };
 
 #endif
